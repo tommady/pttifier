@@ -10,12 +10,7 @@ import (
 	"time"
 )
 
-type status struct {
-	URL    string `json:"url"`
-	Title  string `json:"title"`
-	Author string `json:"author"`
-	Date   string `json:"date"`
-}
+type status ptylib.BaseInfo
 
 type config struct {
 	// Minute as unit
