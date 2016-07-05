@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	ptylib "github.com/tommady/pttifierLib"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -103,11 +105,6 @@ func parsing(r *rule, conf *config) {
 }
 
 func collectPosts(r *rule, statusFilePath string) []*ptylib.BoardInfoAndArticle {
-	stats, err := loadStatus(statusFilePath + r.Board + ".json")
-	if err != nil {
-		log.Println(err)
-		return nil
-	}
 	link := ptylib.WrapBoardPageLink(r.Board, "")
 	root, err := ptylib.GetNodeFromLink(link)
 	if err != nil {
@@ -120,12 +117,31 @@ func collectPosts(r *rule, statusFilePath string) []*ptylib.BoardInfoAndArticle 
 		log.Println(board.Err())
 		return nil
 	}
+	stats, err := loadStatus(statusFilePath + r.Board + ".json")
+	if err == io.EOF {
+		sts := []*status{}
+		for _, p := range posts {
+			st := new(status)
+			st.Author = p.Author
+			st.Date = p.Date
+			st.Title = p.Title
+			st.URL = p.URL
+			sts = append(sts, st)
+		}
+		setStatus(statusFilePath+r.Board+".json", sts)
+		return posts
+	} else if err != nil {
+		log.Println(err)
+		return nil
+	}
 	retPosts := []*ptylib.BoardInfoAndArticle{}
 POST_LOOP:
 	for {
 		for _, post := range posts {
-			if stats.URL == post.URL {
-				break POST_LOOP
+			for _, sts := range stats {
+				if sts.URL == post.URL {
+					break POST_LOOP
+				}
 			}
 			retPosts = append(retPosts, post)
 		}
@@ -143,15 +159,17 @@ POST_LOOP:
 		time.Sleep(time.Second * 1)
 	}
 	if len(retPosts) != 0 {
-		setStatus(statusFilePath+r.Board+".json",
-			&status{
-				URL:    retPosts[0].BaseInfo.URL,
-				Title:  retPosts[0].BaseInfo.Title,
-				Author: retPosts[0].BaseInfo.Author,
-				Date:   retPosts[0].BaseInfo.Date,
-			})
+		sts := []*status{}
+		for _, r := range retPosts {
+			st := new(status)
+			st.Author = r.Author
+			st.Date = r.Date
+			st.Title = r.Title
+			st.URL = r.URL
+			sts = append(sts, st)
+		}
+		setStatus(statusFilePath+r.Board+".json", sts)
 	}
-	log.Println("setting done")
 	return retPosts
 }
 
@@ -183,13 +201,21 @@ func loadRules(path string) ([]*rule, error) {
 	return r, nil
 }
 
-func loadStatus(path string) (*status, error) {
+func loadStatus(path string) ([]*status, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		if strings.Contains(err.Error(), "no such file or directory") ||
+			strings.Contains(err.Error(), "The system cannot find the file specified.") {
+			f, err = os.Create(path)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
 	}
 	defer f.Close()
-	s := new(status)
+	s := []*status{}
 	decoder := json.NewDecoder(f)
 	if err = decoder.Decode(&s); err != nil {
 		return nil, err
@@ -197,7 +223,7 @@ func loadStatus(path string) (*status, error) {
 	return s, nil
 }
 
-func setStatus(path string, stats *status) error {
+func setStatus(path string, stats []*status) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err

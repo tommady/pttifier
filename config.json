@@ -1,5 +1,5 @@
 {
-        "crawling_period": 2,
+        "crawling_period": 3,
         "rule_path": "./rule.json",
         "status_path": "./status/",
         "result_path": "./results/"
