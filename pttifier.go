@@ -3,16 +3,16 @@ package main
 import (
 	"encoding/json"
 	ptylib "github.com/tommady/pttifierLib"
+	"html/template"
 	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
-	"os/signal"
+	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
-
-type status ptylib.BaseInfo
 
 type config struct {
 	// Minute as unit
@@ -20,6 +20,7 @@ type config struct {
 	RulePath       string `json:"rule_path"`
 	StatusPath     string `json:"status_path"`
 	ResultPath     string `json:"result_path"`
+	ListenPort     string `json:"listen_port"`
 }
 
 type rule struct {
@@ -29,36 +30,94 @@ type rule struct {
 	ContentKeyword []string `json:"content_keyword"`
 }
 
+type baseHandler struct {
+	*config
+	H func(conf *config, w http.ResponseWriter, r *http.Request)
+}
+
+// ServeHTTP allows our Handler type to satisfy http.Handler.
+func (h baseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.H(h.config, w, r)
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	conf, err := loadConfig("./config.json")
 	if err != nil {
 		log.Fatalln(err)
 	}
-	sigs := make(chan os.Signal, 1)
-	done := make(chan bool, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
 	go func() {
-		sig := <-sigs
-		signal.Stop(sigs)
-		log.Println(sig)
-		done <- true
-	}()
-	if err := startParsing(conf); err != nil {
-		log.Println(err)
-	}
-MainLoop:
-	for {
-		select {
-		case <-done:
-			log.Println("exiting")
-			break MainLoop
-		case <-time.After(time.Minute * time.Duration(conf.CrawlingPeriod)):
-			log.Println("starting")
-			if err := startParsing(conf); err != nil {
-				log.Println(err)
+		for {
+			select {
+			case <-time.After(time.Minute * time.Duration(conf.CrawlingPeriod)):
+				log.Println("starting")
+				if err := startParsing(conf); err != nil {
+					log.Println(err)
+				}
 			}
 		}
+	}()
+	http.Handle("/", baseHandler{config: conf, H: rootHandler})
+	http.Handle("/view", baseHandler{config: conf, H: viewHandler})
+	http.Handle("/delete", baseHandler{config: conf, H: deleteHandler})
+	log.Fatal(http.ListenAndServe(conf.ListenPort, nil))
+}
+
+type byDate []os.FileInfo
+
+func (fs byDate) Len() int           { return len(fs) }
+func (fs byDate) Swap(i, j int)      { fs[i], fs[j] = fs[j], fs[i] }
+func (fs byDate) Less(i, j int) bool { return fs[i].ModTime().Before(fs[j].ModTime()) }
+
+func rootHandler(conf *config, w http.ResponseWriter, r *http.Request) {
+	files, err := ioutil.ReadDir(conf.ResultPath)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	sortFiles := make(byDate, 0, len(files))
+	for _, f := range files {
+		sortFiles = append(sortFiles, f)
+	}
+	sort.Sort(sortFiles)
+	page := template.Must(template.ParseFiles(
+		"index.tmpl",
+	))
+	if err := page.Execute(w, sortFiles); err != nil {
+		log.Println(err)
+		return
+	}
+}
+
+func deleteHandler(conf *config, w http.ResponseWriter, r *http.Request) {
+	path := conf.ResultPath + r.FormValue("title")
+	if err := os.Remove(path); err != nil {
+		log.Println(err)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func viewHandler(conf *config, w http.ResponseWriter, r *http.Request) {
+	path := conf.ResultPath + r.FormValue("title")
+	f, err := os.Open(path)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer f.Close()
+	cs := new(ptylib.BoardInfoAndArticle)
+	decoder := json.NewDecoder(f)
+	if err = decoder.Decode(&cs); err != nil {
+		log.Println(err)
+		return
+	}
+	page := template.Must(template.ParseFiles(
+		"content.tmpl",
+	))
+	if err := page.Execute(w, cs); err != nil {
+		log.Println(err)
+		return
 	}
 }
 
@@ -119,9 +178,9 @@ func collectPosts(r *rule, statusFilePath string) []*ptylib.BoardInfoAndArticle 
 	}
 	stats, err := loadStatus(statusFilePath + r.Board + ".json")
 	if err == io.EOF {
-		sts := []*status{}
+		sts := []*ptylib.BaseInfo{}
 		for _, p := range posts {
-			st := new(status)
+			st := new(ptylib.BaseInfo)
 			st.Author = p.Author
 			st.Date = p.Date
 			st.Title = p.Title
@@ -159,9 +218,9 @@ POST_LOOP:
 		time.Sleep(time.Second * 1)
 	}
 	if len(retPosts) != 0 {
-		sts := []*status{}
+		sts := []*ptylib.BaseInfo{}
 		for _, r := range retPosts {
-			st := new(status)
+			st := new(ptylib.BaseInfo)
 			st.Author = r.Author
 			st.Date = r.Date
 			st.Title = r.Title
@@ -201,7 +260,7 @@ func loadRules(path string) ([]*rule, error) {
 	return r, nil
 }
 
-func loadStatus(path string) ([]*status, error) {
+func loadStatus(path string) ([]*ptylib.BaseInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such file or directory") ||
@@ -215,7 +274,7 @@ func loadStatus(path string) ([]*status, error) {
 		}
 	}
 	defer f.Close()
-	s := []*status{}
+	s := []*ptylib.BaseInfo{}
 	decoder := json.NewDecoder(f)
 	if err = decoder.Decode(&s); err != nil {
 		return nil, err
@@ -223,7 +282,7 @@ func loadStatus(path string) ([]*status, error) {
 	return s, nil
 }
 
-func setStatus(path string, stats []*status) error {
+func setStatus(path string, stats []*ptylib.BaseInfo) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err

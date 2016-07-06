@@ -1,0 +1,36 @@
+<table class="table" style="table-layout:fixed;word-wrap:break-word;">
+        <thead>
+                <tr>
+                        <th></th>
+                        <th></th>
+                        <th>Title</th>
+                        <th>Date</th>
+                </tr>
+        </thead>
+        <tbody>
+                {{ range . }}
+                <tr>
+                        <td>
+                                <form role="form" method="post" action="/delete" enctype="application/x-www-form-urlencoded">
+                                        <button type="submit" class="btn btn-success" name="title" value="{{ .Name }}">
+                                                delete
+                                        </button>
+                                </form>
+                        </td>
+                        <td>
+                                <form role="form" method="post" action="/view" enctype="application/x-www-form-urlencoded">
+                                        <button type="submit" class="btn btn-success" name="title" value="{{ .Name }}">
+                                                view
+                                        </button>
+                                </form>
+                        </td>
+                        <td>
+                                {{ .Name }}
+                        </td>
+                        <td>
+                                {{ .ModTime }}
+                        </td>
+                </tr>
+                {{ end }}
+        </tbody>
+</table>
